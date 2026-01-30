@@ -1,498 +1,1030 @@
-# MPU-9250 센서 데이터 기반 확장 칼만 필터(EKF) 완전 가이드
+# GPS & 칼만 필터 기반 헬스케어 게이미피케이션 플랫폼
 
-이 문서는 MPU-9250 IMU 센서에서 데이터를 읽어 확장 칼만 필터(Extended Kalman Filter)로 위치/속도/방향을 추정하는 **전체 과정**을 처음부터 끝까지 상세히 설명합니다.
+운동하면서 땅따먹기! GPS와 센서로 내 위치를 정확히 추적하고, 달리면서 지도 위 영역을 정복하는 게임형 운동 앱
+
+## 1. 프로젝트 한눈에 보기
+
+**스마트폰 GPS는 가끔 튀어요!**
+
+건물 옆을 지나거나, 구름이 많은 날에는 GPS가 갑자기 10미터씩 점프하기도 합니다.
+이 프로젝트는 **여러 센서를 합쳐서** GPS 오차를 보정하고, 정확한 위치를 계산합니다.
+
+### 최종 목표
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    🏃 사용자가 달리면...                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│    📍 GPS: "지금 여기!"     →   🧮 칼만필터   →   📌 정확한 위치!     │
+│    🔄 자이로: "왼쪽으로 돔"  →   (데이터 융합)  →   🗺️ 지도에 경로 표시 │  
+│    📏 가속도: "앞으로 가속"  →                 →   🎮 영역 정복!      │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 왜 직접 만드나요?
+
+| 일반적인 방법                        | 이 프로젝트                   |
+| ------------------------------------ | ----------------------------- |
+| 스마트폰이 주는 GPS 좌표 그대로 사용 | 센서 Raw 데이터부터 직접 처리 |
+| 오차가 있어도 그냥 사용              | 칼만 필터로 오차 보정         |
+| 완성된 라이브러리 사용               | 수학 공식부터 직접 구현       |
 
 ---
 
-## 📑 목차
+## 2. 기술 스택 총정리
 
-1. [시스템 전체 구조](#1-시스템-전체-구조)
-2. [Step 1: I2C 레지스터에서 Raw Data 읽기](#2-step-1-i2c-레지스터에서-raw-data-읽기)
-3. [Step 2: Raw Data를 물리 단위(SI)로 변환](#3-step-2-raw-data를-물리-단위si로-변환)
-4. [Step 3: EKF 예측 단계 계산](#4-step-3-ekf-예측-단계-계산)
-5. [최종 결과 정리](#5-최종-결과-정리)
-6. [임베디드 최적화 팁](#6-임베디드-최적화-팁)
-
----
-
-## 1. 시스템 전체 구조
-
-### 🔍 이 프로젝트는 무엇을 하나요?
-
-스마트폰이나 웨어러블 기기에 들어있는 **가속도 센서**와 **자이로 센서**의 데이터를 읽어서, 사용자가 **어디에 있는지(위치)**, **얼마나 빠르게 움직이는지(속도)**, **어느 방향을 보고 있는지(방향)**를 계산합니다.
-
-### 📊 데이터 흐름 한눈에 보기
+### 📊 전체 기술 스택 다이어그램
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          전체 데이터 처리 흐름                               │
+│                              기술 스택 Overview                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐         │
+│  │   임베디드/펌웨어   │    │    백엔드 서버    │    │   프론트엔드/앱   │         │
+│  ├─────────────────┤    ├─────────────────┤    ├─────────────────┤         │
+│  │ • C/C++         │    │ • Python        │    │ • React Native  │         │
+│  │ • ESP-IDF       │    │ • FastAPI       │    │ • TypeScript    │         │
+│  │ • FreeRTOS      │    │ • Kafka         │    │ • Mapbox GL     │         │
+│  │ • Arduino       │    │ • TimescaleDB   │    │                 │         │
+│  └────────┬────────┘    └────────┬────────┘    └────────┬────────┘         │
+│           │                      │                      │                   │
+│           └──────────────────────┼──────────────────────┘                   │
+│                                  ▼                                          │
+│                        ┌─────────────────┐                                  │
+│                        │   데이터 분석     │                                  │
+│                        ├─────────────────┤                                  │
+│                        │ • Python        │                                  │
+│                        │ • NumPy/SciPy   │                                  │
+│                        │ • Matplotlib    │                                  │
+│                        └─────────────────┘                                  │
+│                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
-
-   [MPU-9250 센서]
-        │
-        ▼
-┌───────────────────┐     I2C 통신으로 레지스터 읽기
-│ Step 1: Raw Data  │     예: ACCEL_X = 0xFF, 0xAD (16진수)
-│   (16비트 정수)    │         → -83 (10진수)
-└─────────┬─────────┘
-          │
-          ▼
-┌───────────────────┐     Sensitivity Scale Factor 적용
-│ Step 2: 물리 단위 │     예: -83 ÷ 16384 × 9.8 = -0.0497 m/s²
-│   (m/s², rad/s)   │
-└─────────┬─────────┘
-          │
-          ▼
-┌───────────────────┐     등가속도 운동 공식 적용
-│ Step 3: EKF 예측  │     p = p + v×dt + ½a×dt²
-│  (위치/속도/방향)  │     v = v + a×dt
-└─────────┬─────────┘     θ = θ + ω×dt
-          │
-          ▼
-   [상태 벡터 출력]
-   [px, py, vx, vy, θ]
 ```
 
-### 🎯 예제 시나리오
+### 🛠️ 레이어별 기술 스택
 
-**상황:** 사용자가 약간 앞으로 뛰면서(+X 속도 유지), 몸이 살짝 흔들리고(-X, +Y 가속), 아주 미세하게 왼쪽으로 회전하려는 순간
-
-이 상황에서 센서가 측정한 값들을 따라가며 전체 과정을 이해해봅시다.
+| 레이어               | 기술         | 버전      | 용도                   |
+| -------------------- | ------------ | --------- | ---------------------- |
+| **임베디드**   | C/C++        | C11/C++17 | ESP32 펌웨어 개발      |
+|                      | ESP-IDF      | v5.1      | 공식 개발 프레임워크   |
+|                      | FreeRTOS     | -         | 실시간 멀티태스킹      |
+|                      | Arduino      | -         | 빠른 프로토타이핑용    |
+| **통신**       | BLE 5.0      | -         | 디바이스 ↔ 앱 통신    |
+|                      | I2C          | -         | 센서 ↔ MCU 통신       |
+|                      | UART         | -         | GPS ↔ MCU 통신        |
+| **백엔드**     | Python       | 3.11+     | 메인 언어              |
+|                      | FastAPI      | 0.100+    | REST API 서버          |
+|                      | Kafka        | 3.5+      | 실시간 메시지 스트리밍 |
+|                      | TimescaleDB  | 2.11+     | 시계열 데이터 저장     |
+| **프론트엔드** | React Native | 0.72+     | 크로스플랫폼 앱        |
+|                      | TypeScript   | 5.0+      | 타입 안정성            |
+|                      | Mapbox GL    | 10.0+     | 지도 시각화            |
+| **분석**       | NumPy        | 1.24+     | 수치 계산              |
+|                      | SciPy        | 1.11+     | 칼만 필터 구현         |
+|                      | Matplotlib   | 3.7+      | 데이터 시각화          |
 
 ---
 
-## 2. Step 1: I2C 레지스터에서 Raw Data 읽기
+## 3. 시스템 전체 구조
 
-### 🤔 왜 이 과정이 필요한가요?
-
-MPU-9250 센서는 측정값을 디지털 숫자로 저장합니다. 하지만 이 숫자는 우리가 아는 "미터"나 "각도" 같은 단위가 아닙니다. 
-**센서 내부의 메모리(레지스터)**에 저장된 **2진수 Raw 데이터**를 먼저 읽어와야 합니다.
-
-### 📌 MPU-9250 센서 설정
-
-| 설정 항목 | 값 | 의미 |
-|-----------|-----|------|
-| 가속도 측정 범위 | ±2g | 최대 ±2×중력가속도까지 측정 가능 |
-| 자이로 측정 범위 | ±250°/s | 최대 ±초당 250도 회전까지 측정 가능 |
-| 데이터 형식 | 16비트 정수(int16) | -32,768 ~ +32,767 범위 |
-
-### 📡 I2C 레지스터 구조
-
-MPU-9250은 데이터를 **상위 8비트(High Byte)**와 **하위 8비트(Low Byte)**로 나누어 저장합니다. (Big-endian 방식)
-
-```plaintext
-[I2C Read Sequence from Address 0x3B]
-
-Addr  | Name         | Hex Value | Binary View (8-bit)  | 설명
-------+--------------+-----------+----------------------+------------------
-0x3B  | ACCEL_X_H    | 0xFF      | 1111 1111            | -83의 상위 비트
-0x3C  | ACCEL_X_L    | 0xAD      | 1010 1101            | -83의 하위 비트
-0x3D  | ACCEL_Y_H    | 0x00      | 0000 0000            | 200의 상위 비트
-0x3E  | ACCEL_Y_L    | 0xC8      | 1100 1000            | 200의 하위 비트
-0x3F  | ACCEL_Z_H    | 0x40      | 0100 0000            | 16500의 상위 비트
-0x40  | ACCEL_Z_L    | 0x74      | 0111 0100            | 16500의 하위 비트
-...   | ...          | ...       | ...                  | ...
-0x47  | GYRO_Z_H     | 0x02      | 0000 0010            | 750의 상위 비트
-0x48  | GYRO_Z_L     | 0xEE      | 1110 1110            | 750의 하위 비트
-```
-
-### 🔢 Hex → Int16 변환 상세 설명
-
-#### (1) ACCEL_X (결과: -83)
-
-**음수 표현: 2의 보수(Two's Complement)**
-
-컴퓨터는 음수를 "2의 보수"라는 방식으로 표현합니다.
+### 📊 데이터가 흐르는 길
 
 ```
-읽어온 Hex 값: 0xFF, 0xAD
-
-1. 바이트 결합:
-   High Byte (0xFF) = 1111 1111
-   Low Byte  (0xAD) = 1010 1101
-   
-   결합: 1111 1111 1010 1101 (16비트)
-
-2. 2의 보수 해석:
-   - 최상위 비트(MSB)가 1 → 음수!
-   - 2의 보수 변환: 비트 반전 후 +1
-   - 0000 0000 0101 0010 + 1 = 0000 0000 0101 0011 = 83
-   - 결과: -83
-```
-
-#### (2) ACCEL_Y (결과: 200)
-
-**양수는 간단히 16진수 → 10진수 변환**
-
-```
-읽어온 Hex 값: 0x00, 0xC8
-
-1. 바이트 결합:
-   High Byte (0x00) = 0000 0000
-   Low Byte  (0xC8) = 1100 1000
-   
-   결합: 0000 0000 1100 1000
-
-2. 10진수 변환:
-   - 최상위 비트(MSB)가 0 → 양수!
-   - 직접 계산: 128 + 64 + 8 = 200
-```
-
-#### (3) ACCEL_Z (결과: 16500, 약 1g)
-
-```
-읽어온 Hex 값: 0x40, 0x74
-
-검산: (0x40 × 256) + 0x74 = (64 × 256) + 116 = 16,384 + 116 = 16,500
-```
-
-> **💡 참고:** Z축 값이 약 16,384인 것은 센서가 중력(1g)을 감지하고 있기 때문입니다. 센서가 평평하게 놓여있으면 Z축이 지구 중력을 온전히 받습니다.
-
-#### (4) GYRO_Z (결과: 750)
-
-```
-읽어온 Hex 값: 0x02, 0xEE
-
-검산: (0x02 × 256) + 0xEE = (2 × 256) + 238 = 512 + 238 = 750
-```
-
-### ✅ Step 1 결과: Raw Data 값
-
-| 센서 | 레지스터 | Raw 값 (Int16) | 의미 |
-|------|----------|----------------|------|
-| ACCEL_X | 0x3B-0x3C | **-83** | 미세한 X축 감속 |
-| ACCEL_Y | 0x3D-0x3E | **200** | 우측으로 약간 쏠림 |
-| ACCEL_Z | 0x3F-0x40 | **16500** | 중력가속도 (≈1g) |
-| GYRO_Z | 0x47-0x48 | **750** | Z축 회전 (왼쪽으로) |
-
----
-
-## 3. Step 2: Raw Data를 물리 단위(SI)로 변환
-
-### 🤔 왜 이 과정이 필요한가요?
-
-Raw Data "-83"이라는 숫자만 봐서는 "얼마나 빨리 가속하는지" 알 수 없습니다. 
-이 숫자를 우리가 아는 **물리 단위(m/s², rad/s)**로 바꿔야 계산이 가능합니다.
-
-### 📐 핵심 개념: Sensitivity Scale Factor
-
-**Sensitivity(민감도)**란 "실제 물리량 1단위가 센서값 몇으로 표현되는가"를 뜻합니다.
-
-| 센서 | 설정 | Sensitivity | 의미 |
-|------|------|-------------|------|
-| 가속도 | ±2g | 16,384 LSB/g | 1g = 16,384 |
-| 자이로 | ±250°/s | 131 LSB/(°/s) | 1°/s = 131 |
-
-> **LSB란?** Least Significant Bit. 센서가 출력하는 가장 작은 단위입니다.
-
----
-
-### 🧮 가속도 변환 공식 (상세)
-
-$$
-a_{(m/s^2)} = \frac{\text{Raw Data}}{\text{Sensitivity}} \times g_{표준}
-$$
-
-여기서 $g_{표준} = 9.80665 \, m/s^2$ (표준 중력 가속도)
-
----
-
-#### ▶ ACCEL_X 계산 분해
-
-$$
-a_x = \frac{-83}{16384} \times 9.80665 \approx \mathbf{-0.0497 \, m/s^2}
-$$
-
-**각 요소의 의미:**
-
-| 기호 | 값 | 설명 |
-|------|-----|------|
-| -83 | `[Raw Data]` | 센서 레지스터에서 읽어온 16비트 정수 원본 값 |
-| 16384 | `[Sensitivity]` | ±2g 모드에서 1g = 16,384 LSB |
-| -0.00506 | `[중간값]` | g 단위로 변환된 값 (약 -0.005g) |
-| 9.80665 | `[표준 중력]` | g → m/s² 변환 상수 |
-| **-0.0497** | `[최종값]` | m/s² 단위의 가속도 (EKF 입력값) |
-
-**단계별 계산:**
-```
-1단계: g 단위 변환
-   -83 ÷ 16384 = -0.00506... g
-
-2단계: m/s² 변환
-   -0.00506 × 9.80665 = -0.0497 m/s²
+  [손목에 찬 웨어러블 기기]
+         │
+         ▼
+  ┌──────────────────────────────────────────────────────────────┐
+  │                    센서들 (3가지)                              │
+  │                                                              │
+  │   🛰️ GPS 모듈        🔄 IMU 센서           ❤️ 심박 센서         │
+  │   (NEO-M9N)         (MPU-9250)           (MAX30102)         │
+  │   "위도/경도 알려줌"   "흔들림/회전 감지"      "심장 박동 측정"     │
+  │        │ UART              │ I2C                │ I2C        │
+  └────────┼──────────────────┼────────────────────┼─────────────┘
+           │                  │                    │
+           ▼                  ▼                    ▼
+  ┌──────────────────────────────────────────────────────────────┐
+  │                   🧠 ESP32-S3 (두뇌)                          │
+  │                                                              │
+  │   [Step 1] Raw 데이터 수집 (0xFF, 0xAD 같은 숫자들)              │
+  │       ↓                                                      │
+  │   [Step 2] 물리 단위로 변환 (-0.05 m/s² 같은 의미있는 값)         │
+  │       ↓                                                      │
+  │   [Step 3] 칼만 필터 적용 (위치/속도/방향 추정)                   │
+  │       ↓                                                      │
+  │   [Step 4] 게임 로직 (영역 정복 계산)                           │
+  │                                                              │
+  └───────────────────────────┬──────────────────────────────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              ▼                               ▼
+     📱 스마트폰 앱                      💾 SD 카드
+     (지도에 표시)                      (데이터 저장)
 ```
 
 ---
 
-#### ▶ ACCEL_Y 계산 분해
+## 4. 하드웨어 구성
 
-$$
-a_y = \frac{200}{16384} \times 9.80665 \approx \mathbf{0.1197 \, m/s^2}
-$$
+### 🧩 사용하는 부품들
 
-**단계별 계산:**
+| 부품                 | 모델명      | 하는 일                          | 연결 방식          |
+| -------------------- | ----------- | -------------------------------- | ------------------ |
+| **두뇌 (MCU)** | ESP32-S3    | 모든 계산을 담당하는 소형 컴퓨터 | -                  |
+| **GPS**        | NEO-M9N     | 위성에서 신호 받아 위치 계산     | UART (문자로 대화) |
+| **IMU**        | MPU-9250    | 움직임 감지 (가속도+회전+나침반) | I2C (번호로 대화)  |
+| **심박**       | MAX30102    | 손목 혈관에 빛 쏴서 맥박 측정    | I2C                |
+| **배터리**     | LiPo 500mAh | 전원 공급 (3.7V)                 | -                  |
+
+### 🔋 전원 문제
+
 ```
-1단계: g 단위 변환
-   200 ÷ 16384 = 0.01221... g
-
-2단계: m/s² 변환
-   0.01221 × 9.80665 = 0.1197 m/s²
+배터리: 3.7V  →  그런데 MCU는 3.3V만 받음!  →  레귤레이터로 전압 낮춤
+         ⚡                  ⚠️                     ✅
 ```
 
----
+### 📌 핀 연결도 (Wiring Diagram)
 
-### 🧮 자이로 변환 공식 (상세)
-
-$$
-\omega_{(rad/s)} = \frac{\text{Raw Data}}{\text{Sensitivity}} \times \frac{\pi}{180}
-$$
-
-> **왜 π/180?** 삼각함수(sin, cos)는 라디안(radian) 단위를 사용하기 때문입니다.
-> - 180° = π rad
-> - 1° = π/180 rad ≈ 0.0174533
-
----
-
-#### ▶ GYRO_Z 계산 분해
-
-$$
-\omega_z = \frac{750}{131} \times \frac{\pi}{180} \approx \mathbf{0.0999 \, rad/s}
-$$
-
-**각 요소의 의미:**
-
-| 기호 | 값 | 설명 |
-|------|-----|------|
-| 750 | `[Raw Data]` | 센서 레지스터에서 읽어온 16비트 정수 원본 값 |
-| 131 | `[Sensitivity]` | ±250°/s 모드에서 1°/s = 131 LSB |
-| 5.725 | `[중간값]` | °/s 단위로 변환된 값 (초당 약 5.7도 회전) |
-| π/180 | `[변환 상수]` | °→ rad 변환 (약 0.0174533) |
-| **0.0999** | `[최종값]` | rad/s 단위의 각속도 (EKF 입력값) |
-
-**단계별 계산:**
 ```
-1단계: °/s 단위 변환
-   750 ÷ 131 = 5.725... °/s
-
-2단계: rad/s 변환
-   5.725 × (π ÷ 180) = 5.725 × 0.0174533 = 0.0999 rad/s
+ESP32-S3 핀 배치:
+┌─────────────────────────────────────┐
+│                ESP32-S3             │
+│                                     │
+│  GPIO 21 (SDA) ────┬──── MPU-9250 SDA
+│  GPIO 22 (SCL) ────┼──── MPU-9250 SCL
+│                    │
+│                    ├──── MAX30102 SDA
+│                    └──── MAX30102 SCL
+│                                     │
+│  GPIO 16 (RX) ────────── NEO-M9N TX │
+│  GPIO 17 (TX) ────────── NEO-M9N RX │
+│                                     │
+│  3.3V ─────────────────── 센서 VCC  │
+│  GND ──────────────────── 센서 GND  │
+└─────────────────────────────────────┘
 ```
 
 ---
+
+## 5. Step 1: 센서 데이터 읽기
+
+### 🤔 센서가 보내는 데이터는 어떻게 생겼나요?
+
+센서는 우리가 아는 "10미터", "5도" 같은 숫자가 아니라, **2진수 데이터**를 보냅니다!
+
+### 📟 GPS가 보내는 데이터 예시
+
+GPS는 **NMEA**라는 형식의 문자열을 보냅니다:
+
+```
+$GPGGA,092750.000,3723.4657,N,12202.2694,W,1,8,1.03,61.7,M,-21.3,M,,*5C
+  │       │          │     │      │     │ │ │  │    │
+  │       │          │     │      │     │ │ │  │    └─ 해발 고도
+  │       │          │     │      │     │ │ │  └────── 정확도
+  │       │          │     │      │     │ │ └──────── 위성 개수
+  │       │          │     │      │     │ └────────── GPS 품질
+  │       │          │     │      └─────┴──────────── 경도 (서경)
+  │       │          └─────┴───────────────────────── 위도 (북위)
+  │       └────────────────────────────────────────── 시간
+  └────────────────────────────────────────────────── 데이터 종류
+```
+
+### 💻 GPS 파싱 코드 (C언어 - ESP32)
+
+```c
+// gps_parser.c - GPS NMEA 문자열 파싱
+
+#include <string.h>
+#include <stdlib.h>
+
+typedef struct {
+    double latitude;      // 위도
+    double longitude;     // 경도
+    float altitude;       // 고도
+    int satellites;       // 위성 수
+    float hdop;          // 정확도
+} GPSData;
+
+// NMEA 문자열에서 GPS 데이터 추출
+bool parse_gpgga(const char* nmea, GPSData* gps) {
+    // $GPGGA 로 시작하는지 확인
+    if (strncmp(nmea, "$GPGGA", 6) != 0) {
+        return false;
+    }
+  
+    char* token;
+    char buffer[100];
+    strcpy(buffer, nmea);
+  
+    int field = 0;
+    token = strtok(buffer, ",");
+  
+    while (token != NULL) {
+        switch (field) {
+            case 2:  // 위도 (3723.4657)
+                gps->latitude = atof(token);
+                // DDMM.MMMM → DD.DDDDDD 변환
+                int deg = (int)(gps->latitude / 100);
+                double min = gps->latitude - (deg * 100);
+                gps->latitude = deg + (min / 60.0);
+                break;
+            
+            case 4:  // 경도 (12202.2694)
+                gps->longitude = atof(token);
+                deg = (int)(gps->longitude / 100);
+                min = gps->longitude - (deg * 100);
+                gps->longitude = deg + (min / 60.0);
+                break;
+            
+            case 7:  // 위성 수
+                gps->satellites = atoi(token);
+                break;
+            
+            case 8:  // HDOP (정확도)
+                gps->hdop = atof(token);
+                break;
+            
+            case 9:  // 고도
+                gps->altitude = atof(token);
+                break;
+        }
+        token = strtok(NULL, ",");
+        field++;
+    }
+  
+    return true;
+}
+
+// 사용 예시
+void read_gps_example() {
+    const char* nmea = "$GPGGA,092750.000,3723.4657,N,12202.2694,W,1,8,1.03,61.7,M,,*5C";
+    GPSData gps;
+  
+    if (parse_gpgga(nmea, &gps)) {
+        printf("위도: %.6f\n", gps.latitude);       // 37.390762
+        printf("경도: %.6f\n", gps.longitude);      // 122.037823
+        printf("위성 수: %d\n", gps.satellites);     // 8
+    }
+}
+```
+
+### 🔢 IMU가 보내는 데이터 예시
+
+MPU-9250 센서는 **I2C 통신**으로 16진수 데이터를 보냅니다:
+
+```
+주소      이름           값 (16진수)    값 (2진수)
+────────────────────────────────────────────────────
+0x3B   ACCEL_X 상위    0xFF          1111 1111
+0x3C   ACCEL_X 하위    0xAD          1010 1101
+        └─────────────────────────────────────────→ 합치면: -83 (음수!)
+
+0x3D   ACCEL_Y 상위    0x00          0000 0000  
+0x3E   ACCEL_Y 하위    0xC8          1100 1000
+        └─────────────────────────────────────────→ 합치면: 200 (양수!)
+
+0x3F   ACCEL_Z 상위    0x40          0100 0000
+0x40   ACCEL_Z 하위    0x74          0111 0100
+        └─────────────────────────────────────────→ 합치면: 16,500 (약 1g!)
+```
+
+### 💻 IMU 읽기 코드 (C언어 - ESP32)
+
+```c
+// mpu9250.c - MPU-9250 센서 데이터 읽기
+
+#include "driver/i2c.h"
+
+#define MPU9250_ADDR    0x68    // I2C 주소
+#define ACCEL_XOUT_H    0x3B    // 가속도 X 상위 바이트 레지스터
+
+typedef struct {
+    int16_t accel_x;    // X축 가속도 (Raw)
+    int16_t accel_y;    // Y축 가속도 (Raw)
+    int16_t accel_z;    // Z축 가속도 (Raw)
+    int16_t gyro_x;     // X축 자이로 (Raw)
+    int16_t gyro_y;     // Y축 자이로 (Raw)
+    int16_t gyro_z;     // Z축 자이로 (Raw)
+} IMURawData;
+
+// I2C로 1바이트 읽기
+uint8_t i2c_read_byte(uint8_t addr, uint8_t reg) {
+    uint8_t data;
+    i2c_master_write_read_device(I2C_NUM_0, addr, &reg, 1, &data, 1, 100);
+    return data;
+}
+
+// MPU-9250에서 Raw 데이터 읽기
+void mpu9250_read_raw(IMURawData* data) {
+    uint8_t buffer[14];  // 가속도 6바이트 + 온도 2바이트 + 자이로 6바이트
+  
+    // 0x3B부터 14바이트 연속 읽기
+    uint8_t reg = ACCEL_XOUT_H;
+    i2c_master_write_read_device(I2C_NUM_0, MPU9250_ADDR, &reg, 1, buffer, 14, 100);
+  
+    // 상위/하위 바이트 결합 (Big Endian → int16_t)
+    data->accel_x = (buffer[0] << 8) | buffer[1];   // 0x3B, 0x3C
+    data->accel_y = (buffer[2] << 8) | buffer[3];   // 0x3D, 0x3E
+    data->accel_z = (buffer[4] << 8) | buffer[5];   // 0x3F, 0x40
+    // buffer[6], buffer[7] = 온도 (생략)
+    data->gyro_x  = (buffer[8] << 8) | buffer[9];   // 0x43, 0x44
+    data->gyro_y  = (buffer[10] << 8) | buffer[11]; // 0x45, 0x46
+    data->gyro_z  = (buffer[12] << 8) | buffer[13]; // 0x47, 0x48
+}
+
+// 사용 예시
+void read_imu_example() {
+    IMURawData raw;
+    mpu9250_read_raw(&raw);
+  
+    printf("ACCEL_X Raw: %d\n", raw.accel_x);  // -83
+    printf("ACCEL_Y Raw: %d\n", raw.accel_y);  // 200
+    printf("ACCEL_Z Raw: %d\n", raw.accel_z);  // 16500
+    printf("GYRO_Z Raw: %d\n", raw.gyro_z);    // 750
+}
+```
+
+### 🎓 왜 음수가 나오나요? (2의 보수)
+
+```
+예시: 0xFFAD가 왜 -83인가?
+
+1. 16진수 → 2진수:  1111 1111 1010 1101
+2. 맨 앞이 1이면 음수!
+3. 비트 뒤집기:     0000 0000 0101 0010
+4. +1 하기:         0000 0000 0101 0011 = 83
+5. 결과: -83
+```
+
+### ✅ Step 1 결과
+
+| 센서    | Raw 값           | 의미                  |
+| ------- | ---------------- | --------------------- |
+| ACCEL_X | **-83**    | 살짝 뒤로 가속 (감속) |
+| ACCEL_Y | **200**    | 오른쪽으로 기울어짐   |
+| ACCEL_Z | **16,500** | 중력 (≈1g)           |
+| GYRO_Z  | **750**    | 왼쪽으로 회전 중      |
+
+---
+
+## 6. Step 2: 물리 단위 변환
+
+### 🤔 왜 변환이 필요한가요?
+
+**-83**이라는 숫자만 봐서는 "얼마나 빨리 가속하는지" 알 수 없어요!
+이 숫자를 **m/s²** (미터/초²) 같은 **물리 단위**로 바꿔야 계산이 가능합니다.
+
+### 📐 변환 공식 (가속도)
+
+```
+                    Raw 값
+실제 가속도 = ─────────────── × 중력가속도(9.8)
+               Sensitivity
+```
+
+**Sensitivity(민감도)란?**
+
+- ±2g 모드: 1g = 16,384
+- 즉, 센서값 16,384가 나오면 = 1g = 9.8 m/s²
+
+### 💻 단위 변환 코드 (C언어 - ESP32)
+
+```c
+// sensor_convert.c - Raw 데이터를 물리 단위로 변환
+
+#include <math.h>
+
+// 상수 정의 (미리 계산해두면 CPU 절약!)
+#define ACCEL_SENSITIVITY   16384.0f    // ±2g 모드
+#define GYRO_SENSITIVITY    131.0f      // ±250°/s 모드
+#define GRAVITY             9.80665f    // 표준 중력 가속도
+#define DEG_TO_RAD          (M_PI / 180.0f)
+
+// 최적화된 스케일 팩터 (나눗셈 대신 곱셈 사용)
+#define ACCEL_SCALE     (GRAVITY / ACCEL_SENSITIVITY)    // 0.000598550
+#define GYRO_SCALE      (DEG_TO_RAD / GYRO_SENSITIVITY)  // 0.000133158
+
+typedef struct {
+    float accel_x;    // m/s²
+    float accel_y;    // m/s²
+    float accel_z;    // m/s²
+    float gyro_x;     // rad/s
+    float gyro_y;     // rad/s
+    float gyro_z;     // rad/s
+} IMUPhysicalData;
+
+// Raw → 물리 단위 변환
+void convert_imu_data(const IMURawData* raw, IMUPhysicalData* phys) {
+    // 가속도 변환: Raw → m/s²
+    phys->accel_x = raw->accel_x * ACCEL_SCALE;
+    phys->accel_y = raw->accel_y * ACCEL_SCALE;
+    phys->accel_z = raw->accel_z * ACCEL_SCALE;
+  
+    // 자이로 변환: Raw → rad/s
+    phys->gyro_x = raw->gyro_x * GYRO_SCALE;
+    phys->gyro_y = raw->gyro_y * GYRO_SCALE;
+    phys->gyro_z = raw->gyro_z * GYRO_SCALE;
+}
+
+// 사용 예시
+void convert_example() {
+    IMURawData raw = {-83, 200, 16500, 0, 0, 750};
+    IMUPhysicalData phys;
+  
+    convert_imu_data(&raw, &phys);
+  
+    printf("가속도 X: %.4f m/s²\n", phys.accel_x);  // -0.0497
+    printf("가속도 Y: %.4f m/s²\n", phys.accel_y);  //  0.1197
+    printf("가속도 Z: %.4f m/s²\n", phys.accel_z);  //  9.8770 (≈1g)
+    printf("각속도 Z: %.4f rad/s\n", phys.gyro_z);   //  0.0999
+}
+```
+
+### 🧮 ACCEL_X 계산 예시 (수동 계산)
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  ACCEL_X = -83 을 m/s² 로 변환                                  │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  Step 1: g 단위로 변환                                          │
+│  ─────────────────────                                         │
+│      -83 ÷ 16,384 = -0.00507 g                                 │
+│                                                                │
+│  Step 2: m/s² 로 변환                                           │
+│  ──────────────────                                            │
+│      -0.00507 × 9.80665 = -0.0497 m/s²                         │
+│                                                                │
+│  결과: 뒤쪽으로 0.0497 m/s² 가속 (아주 살짝 감속 중)               │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+```
 
 ### ✅ Step 2 결과: 입력 벡터 $u_k$
 
-센서 Raw Data를 물리 단위로 변환한 결과입니다. 이것이 EKF의 **입력값(Input)**이 됩니다.
-
-$$
-u_k = \begin{bmatrix} a_x \\ a_y \\ \omega_z \end{bmatrix} = \begin{bmatrix} -0.0497 \, m/s^2 \\ 0.1197 \, m/s^2 \\ 0.0999 \, rad/s \end{bmatrix}
-$$
-
----
-
-## 4. Step 3: EKF 예측 단계 계산
-
-### 🤔 왜 이 과정이 필요한가요?
-
-센서값(가속도, 각속도)을 알았으니, 이제 **"시간이 지나면 위치와 속도가 어떻게 변할까?"**를 계산합니다.
-이것이 칼만 필터의 **Prediction(예측) 단계**입니다.
-
-### 📌 사용되는 물리 공식
-
-고등학교 물리에서 배운 **등가속도 운동 공식**을 그대로 사용합니다:
-
-| 물리량 | 공식 | 의미 |
-|--------|------|------|
-| 위치 | $p = p_0 + v \cdot \Delta t + \frac{1}{2} a \cdot \Delta t^2$ | 위치 = 이전위치 + 속도×시간 + ½×가속도×시간² |
-| 속도 | $v = v_0 + a \cdot \Delta t$ | 속도 = 이전속도 + 가속도×시간 |
-| 방향 | $\theta = \theta_0 + \omega \cdot \Delta t$ | 방향 = 이전방향 + 각속도×시간 |
-
----
-
-### A. 초기 상태 정의
-
-**이전 상태 벡터** $x_{k-1}$ (직전 시점에 계산되어 저장된 값):
-
-$$
-x_{k-1} = \begin{bmatrix} p_x \\ p_y \\ v_x \\ v_y \\ \theta \end{bmatrix} = \begin{bmatrix} 0 \\ 0 \\ 1.5 \\ 0.5 \\ 0 \end{bmatrix}
-$$
-
-| 상태 변수 | 값 | 의미 |
-|-----------|-----|------|
-| $p_x$ | 0 m | X축 위치 (시작점) |
-| $p_y$ | 0 m | Y축 위치 (시작점) |
-| $v_x$ | 1.5 m/s | X축 속도 (앞으로 걷는 중) |
-| $v_y$ | 0.5 m/s | Y축 속도 (약간 옆으로) |
-| $\theta$ | 0 rad | 바라보는 방향 (정면) |
-
-**시간 간격 ($\Delta t$):** 0.01초 (100Hz 샘플링)
-
----
-
-### B. 좌표계 회전 (Body Frame → Global Frame)
-
-**❓ 이게 뭔가요?**
-
-가속도 센서는 **센서 자체(Body)**를 기준으로 측정합니다. 하지만 우리는 **지도(Global)** 기준으로 위치를 계산해야 합니다.
-
-예를 들어:
-- 사용자가 **동쪽**을 보고 있을 때 "앞으로 가속" = 동쪽 가속
-- 사용자가 **북쪽**을 보고 있을 때 "앞으로 가속" = 북쪽 가속
-
-현재 방향($\theta$)에 따라 가속도를 회전시켜야 합니다.
-
-**회전 변환 공식:**
-$$
-a_{global\_x} = a_x \cos\theta - a_y \sin\theta
-$$
-$$
-a_{global\_y} = a_x \sin\theta + a_y \cos\theta
-$$
-
-**현재 예제에서:**
-
-$\theta = 0$ 이므로, $\cos(0) = 1$, $\sin(0) = 0$
-
-따라서 회전 없이 그대로:
-- $a_{global\_x} = -0.0497 \times 1 - 0.1197 \times 0 = -0.0497 \, m/s^2$
-- $a_{global\_y} = -0.0497 \times 0 + 0.1197 \times 1 = 0.1197 \, m/s^2$
-
----
-
-### C. 상태 전이 계산 (State Transition)
-
-#### ▶ 위치 예측
-
-$$
-p = p_0 + v \cdot \Delta t + \frac{1}{2} a \cdot \Delta t^2
-$$
-
-**X축 위치:**
 ```
-p_x = 0 + (1.5 × 0.01) + (0.5 × -0.0497 × 0.01²)
-    = 0 + 0.015 + (0.5 × -0.0497 × 0.0001)
-    = 0 + 0.015 - 0.000002485
-    ≈ 0.014997 m
-```
-
-**Y축 위치:**
-```
-p_y = 0 + (0.5 × 0.01) + (0.5 × 0.1197 × 0.01²)
-    = 0 + 0.005 + (0.5 × 0.1197 × 0.0001)
-    = 0 + 0.005 + 0.000005985
-    ≈ 0.005006 m
+         ┌───────────────┐
+         │  ax = -0.0497 │ ← X축 가속도 (m/s²)
+  u_k =  │  ay =  0.1197 │ ← Y축 가속도 (m/s²)  
+         │  ωz =  0.0999 │ ← Z축 각속도 (rad/s)
+         └───────────────┘
 ```
 
 ---
 
-#### ▶ 속도 예측
+## 7. Step 3: 칼만 필터 계산
 
-$$
-v = v_0 + a \cdot \Delta t
-$$
+### 🤔 칼만 필터가 뭔가요?
 
-**X축 속도:**
-```
-v_x = 1.5 + (-0.0497 × 0.01)
-    = 1.5 - 0.000497
-    ≈ 1.4995 m/s
-```
+**GPS는 가끔 거짓말을 해요!** 😅
 
-**Y축 속도:**
-```
-v_y = 0.5 + (0.1197 × 0.01)
-    = 0.5 + 0.001197
-    ≈ 0.5012 m/s
-```
+- GPS: "너 지금 여기!" (실제로는 5m 옆)
+- 센서: "근데 너 방금 앞으로만 갔잖아?"
+- 칼만 필터: "둘 다 참고해서... 아마 진짜 위치는 여기일 거야!"
 
----
+**칼만 필터 = 여러 정보를 종합해서 가장 그럴듯한 값을 추정하는 수학적 방법**
 
-#### ▶ 방향 예측
-
-$$
-\theta = \theta_0 + \omega \cdot \Delta t
-$$
+### 🎯 상태 벡터 (우리가 알고 싶은 것들)
 
 ```
-θ = 0 + (0.0999 × 0.01)
-  = 0 + 0.000999
-  ≈ 0.0010 rad   (약 0.057°)
+         ┌─────┐
+         │ px  │ ← X 위치 (어디에 있나?)
+         │ py  │ ← Y 위치
+  x  =   │ vx  │ ← X 속도 (얼마나 빨리 가나?)
+         │ vy  │ ← Y 속도
+         │ θ   │ ← 방향 (어디를 보고 있나?)
+         └─────┘
 ```
 
----
+### 💻 칼만 필터 코드 (Python - 시뮬레이션용)
 
-### ✅ Step 3 결과: 예측된 상태 벡터 $x_{k|k-1}$
+```python
+# kalman_filter.py - 확장 칼만 필터 (EKF) 구현
 
-$$
-x_{k|k-1} = \begin{bmatrix} p_x \\ p_y \\ v_x \\ v_y \\ \theta \end{bmatrix} = \begin{bmatrix} 0.014997 \\ 0.005006 \\ 1.4995 \\ 0.5012 \\ 0.0010 \end{bmatrix}
-$$
+import numpy as np
 
-| 상태 변수 | 예측값 | 변화량 | 해석 |
-|-----------|--------|--------|------|
-| $p_x$ | 0.014997 m | +0.015 m | 0.01초 동안 약 1.5cm 전진 |
-| $p_y$ | 0.005006 m | +0.005 m | 0.01초 동안 약 0.5cm 옆으로 이동 |
-| $v_x$ | 1.4995 m/s | -0.0005 m/s | 미세하게 감속 |
-| $v_y$ | 0.5012 m/s | +0.0012 m/s | 미세하게 측면 가속 |
-| $\theta$ | 0.0010 rad | +0.001 rad | 약 0.06° 왼쪽으로 회전 |
+class ExtendedKalmanFilter:
+    """
+    2D 위치/속도/방향 추정을 위한 확장 칼만 필터
+  
+    상태 벡터: [px, py, vx, vy, theta]
+    - px, py: 위치 (m)
+    - vx, vy: 속도 (m/s)
+    - theta: 방향 (rad)
+    """
+  
+    def __init__(self, dt=0.01):
+        self.dt = dt  # 샘플링 간격 (100Hz = 0.01초)
+    
+        # 상태 벡터 초기화 [px, py, vx, vy, theta]
+        self.x = np.array([0.0, 0.0, 1.5, 0.5, 0.0])
+    
+        # 오차 공분산 행렬 초기화
+        self.P = np.eye(5) * 0.1
+    
+        # 프로세스 노이즈 (시스템 불확실성)
+        self.Q = np.diag([0.01, 0.01, 0.1, 0.1, 0.01])
+    
+        # 측정 노이즈 (GPS 불확실성)
+        self.R = np.diag([5.0, 5.0])  # GPS 오차 약 5m
+  
+    def predict(self, ax, ay, omega_z):
+        """
+        예측 단계 (Prediction Step)
+    
+        센서 입력:
+        - ax, ay: 가속도 (m/s²)
+        - omega_z: 각속도 (rad/s)
+        """
+        dt = self.dt
+        px, py, vx, vy, theta = self.x
+    
+        # 좌표 회전 (Body → Global)
+        cos_t = np.cos(theta)
+        sin_t = np.sin(theta)
+        ax_global = ax * cos_t - ay * sin_t
+        ay_global = ax * sin_t + ay * cos_t
+    
+        # 상태 전이 (등가속도 운동 공식)
+        px_new = px + vx * dt + 0.5 * ax_global * dt**2
+        py_new = py + vy * dt + 0.5 * ay_global * dt**2
+        vx_new = vx + ax_global * dt
+        vy_new = vy + ay_global * dt
+        theta_new = theta + omega_z * dt
+    
+        self.x = np.array([px_new, py_new, vx_new, vy_new, theta_new])
+    
+        # 야코비안 행렬 계산 (선형화)
+        F = self._compute_jacobian(ax, ay, theta)
+    
+        # 오차 공분산 예측
+        self.P = F @ self.P @ F.T + self.Q
+    
+        return self.x.copy()
+  
+    def update(self, gps_x, gps_y):
+        """
+        보정 단계 (Update Step)
+    
+        GPS 측정값으로 예측값 보정
+        """
+        # 측정 행렬 (위치만 측정 가능)
+        H = np.array([
+            [1, 0, 0, 0, 0],
+            [0, 1, 0, 0, 0]
+        ])
+    
+        # 측정값
+        z = np.array([gps_x, gps_y])
+    
+        # 예측된 측정값
+        z_pred = H @ self.x
+    
+        # 잔차 (측정값 - 예측값)
+        y = z - z_pred
+    
+        # 칼만 이득 계산
+        S = H @ self.P @ H.T + self.R
+        K = self.P @ H.T @ np.linalg.inv(S)
+    
+        # 상태 보정
+        self.x = self.x + K @ y
+    
+        # 오차 공분산 보정
+        I = np.eye(5)
+        self.P = (I - K @ H) @ self.P
+    
+        return self.x.copy()
+  
+    def _compute_jacobian(self, ax, ay, theta):
+        """상태 전이 함수의 야코비안 (선형화)"""
+        dt = self.dt
+        cos_t = np.cos(theta)
+        sin_t = np.sin(theta)
+    
+        F = np.eye(5)
+        F[0, 2] = dt  # dpx/dvx
+        F[1, 3] = dt  # dpy/dvy
+    
+        # dpx/dtheta, dpy/dtheta (비선형 항)
+        F[0, 4] = (-ax * sin_t - ay * cos_t) * 0.5 * dt**2
+        F[1, 4] = (ax * cos_t - ay * sin_t) * 0.5 * dt**2
+    
+        return F
 
----
 
-## 5. 최종 결과 정리
-
-### 📋 전체 데이터 흐름 요약
-
+# ========== 사용 예시 ==========
+if __name__ == "__main__":
+    ekf = ExtendedKalmanFilter(dt=0.01)
+  
+    # 센서 입력값 (Step 2에서 변환된 값)
+    ax = -0.0497    # m/s²
+    ay = 0.1197     # m/s²
+    omega_z = 0.0999  # rad/s
+  
+    # 예측 단계
+    predicted = ekf.predict(ax, ay, omega_z)
+  
+    print("=== 예측 결과 ===")
+    print(f"위치: ({predicted[0]:.6f}, {predicted[1]:.6f}) m")
+    print(f"속도: ({predicted[2]:.6f}, {predicted[3]:.6f}) m/s")
+    print(f"방향: {predicted[4]:.6f} rad ({np.degrees(predicted[4]):.3f}°)")
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  입력: MPU-9250 Raw Data                                             │
-│  ACCEL_X = -83, ACCEL_Y = 200, ACCEL_Z = 16500, GYRO_Z = 750        │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Step 2: 물리 단위 변환                                              │
-│  ax = -0.0497 m/s², ay = 0.1197 m/s², ωz = 0.0999 rad/s             │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Step 3: EKF 예측 (dt = 0.01s)                                       │
-│  위치: px=0.015m, py=0.005m                                          │
-│  속도: vx=1.4995m/s, vy=0.5012m/s                                    │
-│  방향: θ=0.001rad                                                    │
-└─────────────────────────────────────────────────────────────────────┘
-```
 
-> **💡 중요 참고:**
-> 이 계산은 칼만 필터의 **"Prediction(예측)"** 단계입니다. 
-> 실제 시스템에서는 GPS 등 다른 센서 데이터가 들어오면 **"Correction(보정)"** 단계를 수행하여 예측값을 수정합니다.
-
----
-
-## 6. 임베디드 최적화 팁
-
-### ⚡ 성능 최적화: 상수 미리 계산하기
-
-임베디드 시스템(MCU)에서는 **나눗셈과 실수 연산 비용이 큽니다.** 매번 계산하는 대신, 상수를 미리 계산해두세요.
+### 💻 칼만 필터 코드 (C언어 - ESP32 임베디드용)
 
 ```c
-// ❌ 비효율적인 방법 (매번 나눗셈 + 곱셈)
-float ax = (raw_accel_x / 16384.0f) * 9.80665f;
-float omega = (raw_gyro_z / 131.0f) * (3.141592f / 180.0f);
+// ekf.c - 임베디드용 확장 칼만 필터
 
-// ✅ 효율적인 방법 (곱셈 한 번)
-#define ACCEL_SCALE  (9.80665f / 16384.0f)      // ≈ 0.000598550
-#define GYRO_SCALE   ((3.141592f / 180.0f) / 131.0f)  // ≈ 0.000133158
+#include <math.h>
+#include <string.h>
 
-float ax = raw_accel_x * ACCEL_SCALE;
-float omega = raw_gyro_z * GYRO_SCALE;
+#define STATE_SIZE 5
+
+typedef struct {
+    float x[STATE_SIZE];        // 상태 벡터 [px, py, vx, vy, theta]
+    float P[STATE_SIZE][STATE_SIZE];  // 오차 공분산 행렬
+    float dt;                   // 샘플링 간격
+} EKF;
+
+// 초기화
+void ekf_init(EKF* ekf, float dt) {
+    ekf->dt = dt;
+  
+    // 상태 초기화
+    memset(ekf->x, 0, sizeof(ekf->x));
+    ekf->x[2] = 1.5f;  // 초기 vx
+    ekf->x[3] = 0.5f;  // 초기 vy
+  
+    // P 행렬 초기화 (단위 행렬 × 0.1)
+    memset(ekf->P, 0, sizeof(ekf->P));
+    for (int i = 0; i < STATE_SIZE; i++) {
+        ekf->P[i][i] = 0.1f;
+    }
+}
+
+// 예측 단계
+void ekf_predict(EKF* ekf, float ax, float ay, float omega_z) {
+    float dt = ekf->dt;
+    float px = ekf->x[0];
+    float py = ekf->x[1];
+    float vx = ekf->x[2];
+    float vy = ekf->x[3];
+    float theta = ekf->x[4];
+  
+    // 좌표 회전
+    float cos_t = cosf(theta);
+    float sin_t = sinf(theta);
+    float ax_global = ax * cos_t - ay * sin_t;
+    float ay_global = ax * sin_t + ay * cos_t;
+  
+    // 상태 업데이트 (등가속도 운동)
+    ekf->x[0] = px + vx * dt + 0.5f * ax_global * dt * dt;
+    ekf->x[1] = py + vy * dt + 0.5f * ay_global * dt * dt;
+    ekf->x[2] = vx + ax_global * dt;
+    ekf->x[3] = vy + ay_global * dt;
+    ekf->x[4] = theta + omega_z * dt;
+}
+
+// 사용 예시
+void ekf_example() {
+    EKF ekf;
+    ekf_init(&ekf, 0.01f);  // 100Hz
+  
+    // 센서값 (물리 단위로 변환된 값)
+    float ax = -0.0497f;
+    float ay = 0.1197f;
+    float omega_z = 0.0999f;
+  
+    // 예측
+    ekf_predict(&ekf, ax, ay, omega_z);
+  
+    printf("위치: (%.6f, %.6f) m\n", ekf.x[0], ekf.x[1]);
+    printf("속도: (%.6f, %.6f) m/s\n", ekf.x[2], ekf.x[3]);
+    printf("방향: %.6f rad\n", ekf.x[4]);
+}
 ```
 
-**효과:** CPU 사이클 절약, 실시간 성능 향상
+### ✅ Step 3 결과: 예측된 상태
+
+| 변수 | 이전 값 | 예측된 값            | 변화량  | 해석          |
+| ---- | ------- | -------------------- | ------- | ------------- |
+| px   | 0 m     | **0.015 m**    | +1.5 cm | 앞으로 이동   |
+| py   | 0 m     | **0.005 m**    | +0.5 cm | 옆으로 이동   |
+| vx   | 1.5 m/s | **1.4995 m/s** | -0.0005 | 살짝 감속     |
+| vy   | 0.5 m/s | **0.5012 m/s** | +0.0012 | 살짝 가속     |
+| θ   | 0 rad   | **0.001 rad**  | +0.06° | 왼쪽으로 회전 |
 
 ---
 
-## 📚 추가 참고 자료
+## 8. Step 4: 게이미피케이션 로직
 
-- **MPU-9250 데이터시트**: Sensitivity Scale Factor 상세 정보
-- **칼만 필터 이론**: 오차 공분산 행렬(P), 측정 보정(Update) 단계
-- **좌표계 변환**: Euler Angle, Quaternion 표현 방식
+### 🗺️ 영역 정복 (땅따먹기)
+
+**규칙:**
+
+1. 사용자가 달리면서 경로를 그립니다
+2. 경로가 닫힌 다각형을 만들면...
+3. 그 영역을 "정복"한 것으로 인정! 🏆
+
+```
+        시작 →  ─────────┐
+                        │
+                        │          이 영역을
+                        │          정복!  ⭐
+                        │
+        끝   ← ─────────┘
+```
+
+### 💻 Point-in-Polygon 알고리즘 (Python)
+
+```python
+# territory.py - 영역 정복 판정 알고리즘
+
+from typing import List, Tuple
+import numpy as np
+
+Point = Tuple[float, float]
+
+def is_polygon_closed(path: List[Point], threshold: float = 10.0) -> bool:
+    """
+    경로가 닫힌 다각형인지 확인
+  
+    Args:
+        path: GPS 좌표 리스트 [(x1,y1), (x2,y2), ...]
+        threshold: 시작점과 끝점 사이 거리 허용치 (미터)
+    """
+    if len(path) < 4:  # 최소 삼각형 + 시작점
+        return False
+  
+    start = np.array(path[0])
+    end = np.array(path[-1])
+    distance = np.linalg.norm(end - start)
+  
+    return distance < threshold
+
+
+def calculate_polygon_area(vertices: List[Point]) -> float:
+    """
+    다각형 면적 계산 (Shoelace 공식)
+  
+    Args:
+        vertices: 다각형 꼭짓점 좌표
+  
+    Returns:
+        면적 (제곱미터)
+    """
+    n = len(vertices)
+    if n < 3:
+        return 0.0
+  
+    area = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        area += vertices[i][0] * vertices[j][1]
+        area -= vertices[j][0] * vertices[i][1]
+  
+    return abs(area) / 2.0
+
+
+def point_in_polygon(point: Point, polygon: List[Point]) -> bool:
+    """
+    점이 다각형 내부에 있는지 판정 (Ray Casting 알고리즘)
+  
+    Args:
+        point: 판정할 점 (x, y)
+        polygon: 다각형 꼭짓점들
+  
+    Returns:
+        True면 내부, False면 외부
+    """
+    x, y = point
+    n = len(polygon)
+    inside = False
+  
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+    
+        if ((yi > y) != (yj > y)) and \
+           (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+            inside = not inside
+    
+        j = i
+  
+    return inside
+
+
+# ========== 사용 예시 ==========
+if __name__ == "__main__":
+    # 사용자가 달린 경로 (GPS 좌표, 미터 단위로 변환됨)
+    running_path = [
+        (0, 0),      # 시작
+        (100, 0),    # 동쪽으로 100m
+        (100, 50),   # 북쪽으로 50m
+        (0, 50),     # 서쪽으로 100m
+        (0, 0)       # 시작점으로 돌아옴
+    ]
+  
+    # 닫힌 다각형인지 확인
+    if is_polygon_closed(running_path):
+        print("✅ 영역 완성!")
+    
+        # 면적 계산
+        area = calculate_polygon_area(running_path)
+        print(f"📐 정복한 면적: {area:.1f} m² ({area/10000:.3f} 헥타르)")
+    
+        # 점수 계산 (1m² = 1점)
+        score = int(area)
+        print(f"🏆 획득 점수: {score} 점")
+    else:
+        print("❌ 경로가 닫히지 않음")
+```
+
+### 💪 심박수 기반 점수 시스템 (Python)
+
+```python
+# scoring.py - 심박수 기반 동적 점수 계산
+
+from enum import Enum
+from dataclasses import dataclass
+
+class HeartRateZone(Enum):
+    """심박수 존 (운동 강도)"""
+    ZONE_1 = 1  # 50-60% HRmax (매우 가벼움)
+    ZONE_2 = 2  # 60-70% HRmax (가벼움)
+    ZONE_3 = 3  # 70-80% HRmax (보통)
+    ZONE_4 = 4  # 80-90% HRmax (고강도)
+    ZONE_5 = 5  # 90-100% HRmax (최대)
+
+@dataclass
+class UserProfile:
+    """사용자 프로필"""
+    age: int
+    resting_hr: int = 60
+  
+    @property
+    def max_hr(self) -> int:
+        """최대 심박수 (220 - 나이)"""
+        return 220 - self.age
+
+def get_hr_zone(bpm: int, user: UserProfile) -> HeartRateZone:
+    """현재 심박수로 운동 존 판정"""
+    hr_reserve = user.max_hr - user.resting_hr
+    intensity = (bpm - user.resting_hr) / hr_reserve
+  
+    if intensity < 0.5:
+        return HeartRateZone.ZONE_1
+    elif intensity < 0.6:
+        return HeartRateZone.ZONE_2
+    elif intensity < 0.7:
+        return HeartRateZone.ZONE_3
+    elif intensity < 0.8:
+        return HeartRateZone.ZONE_4
+    else:
+        return HeartRateZone.ZONE_5
+
+def calculate_score(base_score: float, zone: HeartRateZone) -> float:
+    """심박수 존에 따른 점수 배율 적용"""
+    multipliers = {
+        HeartRateZone.ZONE_1: 0.8,
+        HeartRateZone.ZONE_2: 1.0,
+        HeartRateZone.ZONE_3: 1.5,
+        HeartRateZone.ZONE_4: 2.0,
+        HeartRateZone.ZONE_5: 2.5,
+    }
+    return base_score * multipliers[zone]
+
+
+# ========== 사용 예시 ==========
+if __name__ == "__main__":
+    user = UserProfile(age=25)
+    print(f"최대 심박수: {user.max_hr} bpm")
+  
+    # 시뮬레이션: 다양한 심박수에서의 점수
+    base_area_score = 5000  # 5000m² 영역 정복
+  
+    for bpm in [100, 130, 150, 170]:
+        zone = get_hr_zone(bpm, user)
+        final_score = calculate_score(base_area_score, zone)
+        print(f"심박수 {bpm}bpm (Zone {zone.value}): {final_score:.0f}점")
+```
+
+---
+
+## 9. 데이터 파이프라인
+
+### 📊 Kafka 토픽 설계
+
+| Topic              | 데이터                          | 빈도               | 보관 |
+| ------------------ | ------------------------------- | ------------------ | ---- |
+| `raw.gps.events` | 위도, 경도, 정확도, 시간        | ~1회/초            | 7일  |
+| `raw.hr.events`  | 심박수, RR 간격                 | ~1회/초            | 7일  |
+| `raw.imu.events` | 가속도[3], 자이로[3], 지자기[3] | **~50회/초** | 3일  |
+
+### 💻 FastAPI 백엔드 서버 (Python)
+
+```python
+# main.py - FastAPI 서버
+
+from fastapi import FastAPI, WebSocket
+from pydantic import BaseModel
+from typing import List
+from datetime import datetime
+import asyncio
+
+app = FastAPI(title="헬스케어 게이미피케이션 API")
+
+# 데이터 모델
+class GPSData(BaseModel):
+    user_id: str
+    latitude: float
+    longitude: float
+    accuracy: float
+    timestamp: datetime
+
+class IMUData(BaseModel):
+    user_id: str
+    accel: List[float]   # [x, y, z]
+    gyro: List[float]    # [x, y, z]
+    timestamp: datetime
+
+class HeartRateData(BaseModel):
+    user_id: str
+    bpm: int
+    rr_interval: float
+    timestamp: datetime
+
+# 웹소켓으로 실시간 위치 스트리밍
+@app.websocket("/ws/location/{user_id}")
+async def location_websocket(websocket: WebSocket, user_id: str):
+    await websocket.accept()
+  
+    while True:
+        # 클라이언트로부터 센서 데이터 수신
+        data = await websocket.receive_json()
+    
+        # 칼만 필터 적용 (실제로는 EKF 클래스 사용)
+        filtered_position = {
+            "x": data["gps_x"] * 0.8 + data["imu_x"] * 0.2,
+            "y": data["gps_y"] * 0.8 + data["imu_y"] * 0.2,
+        }
+    
+        # 보정된 위치 전송
+        await websocket.send_json(filtered_position)
+
+# REST API 엔드포인트
+@app.post("/api/v1/gps")
+async def receive_gps(data: GPSData):
+    # Kafka로 전송 (실제 구현 시)
+    # await kafka_producer.send("raw.gps.events", data.dict())
+    return {"status": "received", "user_id": data.user_id}
+
+@app.post("/api/v1/territory/validate")
+async def validate_territory(path: List[List[float]]):
+    """경로가 유효한 영역인지 검증"""
+    from territory import is_polygon_closed, calculate_polygon_area
+  
+    points = [(p[0], p[1]) for p in path]
+  
+    if not is_polygon_closed(points):
+        return {"valid": False, "message": "경로가 닫히지 않음"}
+  
+    area = calculate_polygon_area(points)
+    return {
+        "valid": True,
+        "area_m2": area,
+        "score": int(area)
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+---
+
+## 10. 프로젝트 로드맵
+
+### Phase 1: 하드웨어 ✅ (현재)
+
+- [X] ESP32-S3 + 센서들 납땜
+- [X] I2C/UART 통신 구현
+- [X] Raw Data SD카드 저장
+- [X] Python으로 칼만 필터 시뮬레이션
+
+### Phase 2: 연결성 🔄 (진행 중)
+
+- [ ] BLE 5.0으로 앱과 통신
+- [ ] iOS/Android 앱 지도 연동
+- [ ] 실시간 영역 정복 시각화
+
+### Phase 3: 백엔드 📋 (예정)
+
+- [ ] Kafka & 시계열 DB 구축
+- [ ] 심박변이도(HRV) 분석
+- [ ] 리더보드 시스템
