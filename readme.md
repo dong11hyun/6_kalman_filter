@@ -9,20 +9,6 @@
 건물 옆을 지나거나, 구름이 많은 날에는 GPS가 갑자기 10미터씩 점프하기도 합니다.
 이 프로젝트는 **여러 센서를 합쳐서** GPS 오차를 보정하고, 정확한 위치를 계산합니다.
 
-### 최종 목표
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    🏃 사용자가 달리면...                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│    📍 GPS: "지금 여기!"     →   🧮 칼만필터   →   📌 정확한 위치!     │
-│    🔄 자이로: "왼쪽으로 돔"  →   (데이터 융합)  →   🗺️ 지도에 경로 표시 │  
-│    📏 가속도: "앞으로 가속"  →                 →   🎮 영역 정복!      │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
 ### 왜 직접 만드나요?
 
 | 일반적인 방법                        | 이 프로젝트                   |
@@ -39,11 +25,11 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              기술 스택 Overview                               │
+│                              기술 스택 Overview                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐         │
-│  │   임베디드/펌웨어   │    │    백엔드 서버    │    │   프론트엔드/앱   │         │
+│  │ 임베디드/펌웨어  │    │   백엔드 서버    │    │   프론트엔드/앱  │         │
 │  ├─────────────────┤    ├─────────────────┤    ├─────────────────┤         │
 │  │ • C/C++         │    │ • Python        │    │ • React Native  │         │
 │  │ • ESP-IDF       │    │ • FastAPI       │    │ • TypeScript    │         │
@@ -54,7 +40,7 @@
 │           └──────────────────────┼──────────────────────┘                   │
 │                                  ▼                                          │
 │                        ┌─────────────────┐                                  │
-│                        │   데이터 분석     │                                  │
+│                        │   데이터 분석    │                                  │
 │                        ├─────────────────┤                                  │
 │                        │ • Python        │                                  │
 │                        │ • NumPy/SciPy   │                                  │
@@ -135,13 +121,13 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                         🔄 완전한 데이터 흐름 (End-to-End)                              │
+│                         🔄 완전한 데이터 흐름 (End-to-End)                         
 ├─────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                     │
-│  ① 센서 Raw 데이터 수집                                                               │
+│  ① 센서 Raw 데이터 수집                                                              │
 │  ─────────────────────────────────────────────────────────────────────────────────  │
 │                                                                                     │
-│   🛰️ GPS (UART)              🔄 IMU (I2C)                 ❤️ 심박 (I2C)               │
+│   🛰️ GPS (UART)              🔄 IMU (I2C)                 ❤️ 심박 (I2C)            │
 │   ┌──────────────────┐      ┌──────────────────┐        ┌──────────────────┐       │
 │   │ "$GPGGA,092750.  │      │ 0x3B: 0xFF       │        │ IR:  50213       │       │
 │   │ 000,3723.4657,N, │      │ 0x3C: 0xAD       │        │ Red: 48123       │       │
@@ -199,15 +185,15 @@
 
 ### 📋 데이터 변환 요약표
 
-| 단계 | GPS 데이터 | IMU 데이터 | 심박 데이터 |
-|------|-----------|-----------|------------|
-| **① Raw** | `"$GPGGA,3723.4657,N..."` (문자열) | `0xFF, 0xAD` (16bit 정수) | `IR: 50213` (PPG 파형) |
-| **② 파싱** | 위도: `37.390762°` <br> 경도: `122.037823°` | ACCEL_X: `-83` <br> GYRO_Z: `750` | 피크 간격 검출 |
-| **③ 물리량** | HDOP: `1.03` (정확도) | ax: `-0.0497 m/s²` <br> ωz: `0.0999 rad/s` | BPM: `145` <br> Zone: `4` |
-| **④ 좌표변환** | x: `15.3 m`, y: `5.1 m` (로컬 좌표) | - | - |
-| **⑤ 칼만필터** | 측정값 z로 사용 | 입력값 u로 사용 | - |
-| **⑥ 출력** | px: `15.01 m` (보정된 위치) | vx: `1.50 m/s`, θ: `0.057 rad` | 점수 배율: `×2.0` |
-| **⑦ 최종** | 🎮 닫힌 경로 → 면적: `5,000 m²` → 점수: **`10,000점`** |
+| 단계                  | GPS 데이터                                                         | IMU 데이터                                          | 심박 데이터                      |
+| --------------------- | ------------------------------------------------------------------ | --------------------------------------------------- | -------------------------------- |
+| **① Raw**      | `"$GPGGA,3723.4657,N..."` (문자열)                               | `0xFF, 0xAD` (16bit 정수)                         | `IR: 50213` (PPG 파형)         |
+| **② 파싱**     | 위도:`37.390762°` `<br>` 경도: `122.037823°`               | ACCEL_X:`-83` `<br>` GYRO_Z: `750`            | 피크 간격 검출                   |
+| **③ 물리량**   | HDOP:`1.03` (정확도)                                             | ax:`-0.0497 m/s²` `<br>` ωz: `0.0999 rad/s` | BPM:`145` `<br>` Zone: `4` |
+| **④ 좌표변환** | x:`15.3 m`, y: `5.1 m` (로컬 좌표)                             | -                                                   | -                                |
+| **⑤ 칼만필터** | 측정값 z로 사용                                                    | 입력값 u로 사용                                     | -                                |
+| **⑥ 출력**     | px:`15.01 m` (보정된 위치)                                       | vx:`1.50 m/s`, θ: `0.057 rad`                  | 점수 배율:`×2.0`              |
+| **⑦ 최종**     | 🎮 닫힌 경로 → 면적:`5,000 m²` → 점수: **`10,000점`** |                                                     |                                  |
 
 ---
 
@@ -317,7 +303,7 @@ bool parse_gpgga(const char* nmea, GPSData* gps) {
                 double min = gps->latitude - (deg * 100);
                 gps->latitude = deg + (min / 60.0);
                 break;
-            
+          
             case 3:  // 위도 방향 (N/S) ← 추가!
                 gps->lat_dir = token[0];
                 // ⚠️ 남반구면 음수로!
@@ -325,14 +311,14 @@ bool parse_gpgga(const char* nmea, GPSData* gps) {
                     gps->latitude = -gps->latitude;
                 }
                 break;
-            
+          
             case 4:  // 경도 (12202.2694)
                 gps->longitude = atof(token);
                 deg = (int)(gps->longitude / 100);
                 min = gps->longitude - (deg * 100);
                 gps->longitude = deg + (min / 60.0);
                 break;
-            
+          
             case 5:  // 경도 방향 (E/W) ← 추가!
                 gps->lon_dir = token[0];
                 // ⚠️ 서경이면 음수로!
@@ -340,15 +326,15 @@ bool parse_gpgga(const char* nmea, GPSData* gps) {
                     gps->longitude = -gps->longitude;
                 }
                 break;
-            
+          
             case 7:  // 위성 수
                 gps->satellites = atoi(token);
                 break;
-            
+          
             case 8:  // HDOP (정확도)
                 gps->hdop = atof(token);
                 break;
-            
+          
             case 9:  // 고도
                 gps->altitude = atof(token);
                 break;
@@ -378,6 +364,7 @@ void read_gps_example() {
 **칼만 필터는 "미터" 단위로 계산합니다!**
 
 GPS가 주는 위도/경도(도 단위)를 그대로 사용할 수 없어요. 왜냐하면:
+
 - 위도 1도 ≈ 111km (지구 둘레 ÷ 360)
 - 경도 1도 ≈ 111km × cos(위도) (적도에서 멀어질수록 짧아짐)
 
@@ -444,31 +431,31 @@ void init_gps_reference(GPSReference* ref, double lat, double lon) {
 // 위경도 → 로컬 미터 좌표 변환
 LocalPosition gps_to_local(const GPSReference* ref, double lat, double lon) {
     LocalPosition pos;
-    
+  
     // 경도 차이 → X (미터)
     // ⚠️ cos(위도) 보정 필수! (적도에서 멀어질수록 경도 간격이 좁아짐)
     pos.x = (lon - ref->ref_lon) * ref->cos_ref_lat * METERS_PER_DEG;
-    
+  
     // 위도 차이 → Y (미터)
     pos.y = (lat - ref->ref_lat) * METERS_PER_DEG;
-    
+  
     return pos;
 }
 
 // 사용 예시
 void gps_conversion_example() {
     GPSReference ref;
-    
+  
     // 1. 기준점 설정 (운동 시작 위치)
     init_gps_reference(&ref, 37.390762, -122.037823);
-    
+  
     // 2. 이동 후 GPS 좌표
     double new_lat = 37.390852;   // 북쪽으로 약 10m 이동
     double new_lon = -122.037723; // 동쪽으로 약 8m 이동
-    
+  
     // 3. 미터 좌표로 변환
     LocalPosition pos = gps_to_local(&ref, new_lat, new_lon);
-    
+  
     printf("현재 위치: X=%.2f m, Y=%.2f m\n", pos.x, pos.y);
     // 출력: 현재 위치: X=7.93 m, Y=10.02 m
 }
@@ -635,70 +622,70 @@ typedef struct {
     float gyro_bias_x;
     float gyro_bias_y;
     float gyro_bias_z;
-    
+  
     // 가속도계 바이어스 (중력 제외한 오차)
     float accel_bias_x;
     float accel_bias_y;
     float accel_bias_z;
-    
+  
     bool is_calibrated;   // 캘리브레이션 완료 여부
 } IMUCalibration;
 
 // 캘리브레이션 수행 (디바이스를 수평으로 놓고 가만히!)
 bool calibrate_imu(IMUCalibration* cal) {
     printf("⏳ 캘리브레이션 시작! 디바이스를 수평으로 놓고 10초간 움직이지 마세요...\n");
-    
+  
     // 합계 누적용
     long gyro_sum[3] = {0, 0, 0};
     long accel_sum[3] = {0, 0, 0};
-    
+  
     IMURawData raw;
-    
+  
     for (int i = 0; i < CALIBRATION_SAMPLES; i++) {
         mpu9250_read_raw(&raw);
-        
+      
         gyro_sum[0] += raw.gyro_x;
         gyro_sum[1] += raw.gyro_y;
         gyro_sum[2] += raw.gyro_z;
-        
+      
         accel_sum[0] += raw.accel_x;
         accel_sum[1] += raw.accel_y;
         accel_sum[2] += raw.accel_z;
-        
+      
         vTaskDelay(pdMS_TO_TICKS(10));  // 100Hz (10ms 대기)
     }
-    
+  
     // 평균 계산 = 바이어스
     cal->gyro_bias_x = (float)gyro_sum[0] / CALIBRATION_SAMPLES;
     cal->gyro_bias_y = (float)gyro_sum[1] / CALIBRATION_SAMPLES;
     cal->gyro_bias_z = (float)gyro_sum[2] / CALIBRATION_SAMPLES;
-    
+  
     // 가속도계: 수평 상태에서 Z축만 중력(16384)이어야 함
     cal->accel_bias_x = (float)accel_sum[0] / CALIBRATION_SAMPLES;
     cal->accel_bias_y = (float)accel_sum[1] / CALIBRATION_SAMPLES;
     cal->accel_bias_z = (float)accel_sum[2] / CALIBRATION_SAMPLES - 16384.0f;  // 중력 빼기!
-    
+  
     cal->is_calibrated = true;
-    
+  
     printf("✅ 캘리브레이션 완료!\n");
     printf("   자이로 바이어스: (%.1f, %.1f, %.1f)\n", 
            cal->gyro_bias_x, cal->gyro_bias_y, cal->gyro_bias_z);
     printf("   가속도 바이어스: (%.1f, %.1f, %.1f)\n",
            cal->accel_bias_x, cal->accel_bias_y, cal->accel_bias_z);
-    
+  
     return true;
 }
 
 // 바이어스 보정된 데이터 읽기
 void read_calibrated_imu(const IMUCalibration* cal, IMURawData* raw) {
     mpu9250_read_raw(raw);
-    
+  
     if (cal->is_calibrated) {
         // ⚠️ 바이어스 빼기! (정수 연산)
         raw->gyro_x -= (int16_t)cal->gyro_bias_x;
         raw->gyro_y -= (int16_t)cal->gyro_bias_y;
         raw->gyro_z -= (int16_t)cal->gyro_bias_z;
-        
+      
         raw->accel_x -= (int16_t)cal->accel_bias_x;
         raw->accel_y -= (int16_t)cal->accel_bias_y;
         raw->accel_z -= (int16_t)cal->accel_bias_z;
@@ -708,26 +695,26 @@ void read_calibrated_imu(const IMUCalibration* cal, IMURawData* raw) {
 // 사용 예시
 void calibration_example() {
     IMUCalibration cal;
-    
+  
     // 1. 앱 시작 시 캘리브레이션
     calibrate_imu(&cal);
-    
+  
     // 2. 이후 데이터 읽기
     IMURawData raw;
     read_calibrated_imu(&cal, &raw);
-    
+  
     printf("보정된 GYRO_Z: %d (바이어스 제거됨!)\n", raw.gyro_z);
 }
 ```
 
 ### 📊 캘리브레이션 전후 비교
 
-| 항목 | 캘리브레이션 전 | 캘리브레이션 후 |
-|------|---------------|---------------|
-| GYRO_X (정지) | 15 | **0** ✓ |
-| GYRO_Y (정지) | -23 | **0** ✓ |
-| GYRO_Z (정지) | 8 | **0** ✓ |
-| 1분 후 누적 오차 | 480° 🔴 | **0°** ✅ |
+| 항목             | 캘리브레이션 전 | 캘리브레이션 후  |
+| ---------------- | --------------- | ---------------- |
+| GYRO_X (정지)    | 15              | **0** ✓   |
+| GYRO_Y (정지)    | -23             | **0** ✓   |
+| GYRO_Z (정지)    | 8               | **0** ✓   |
+| 1분 후 누적 오차 | 480° 🔴        | **0°** ✅ |
 
 ---
 
@@ -1125,57 +1112,57 @@ class ExtendedKalmanFilter:
   
     def __init__(self, dt=0.01):
         self.dt = dt  # 샘플링 간격 (100Hz = 0.01초)
-    
+  
         # 상태 벡터 초기화 [px, py, vx, vy, theta]
         self.x = np.array([0.0, 0.0, 1.5, 0.5, 0.0])
-    
+  
         # 오차 공분산 행렬 초기화
         self.P = np.eye(5) * 0.1
-    
+  
         # 프로세스 노이즈 (시스템 불확실성)
         self.Q = np.diag([0.01, 0.01, 0.1, 0.1, 0.01])
-    
+  
         # 측정 노이즈 (GPS 불확실성)
         self.R = np.diag([5.0, 5.0])  # GPS 오차 약 5m
   
     def predict(self, ax, ay, omega_z):
         """
         예측 단계 (Prediction Step)
-    
+  
         센서 입력:
         - ax, ay: 가속도 (m/s²)
         - omega_z: 각속도 (rad/s)
         """
         dt = self.dt
         px, py, vx, vy, theta = self.x
-    
+  
         # 좌표 회전 (Body → Global)
         cos_t = np.cos(theta)
         sin_t = np.sin(theta)
         ax_global = ax * cos_t - ay * sin_t
         ay_global = ax * sin_t + ay * cos_t
-    
+  
         # 상태 전이 (등가속도 운동 공식)
         px_new = px + vx * dt + 0.5 * ax_global * dt**2
         py_new = py + vy * dt + 0.5 * ay_global * dt**2
         vx_new = vx + ax_global * dt
         vy_new = vy + ay_global * dt
         theta_new = theta + omega_z * dt
-    
+  
         self.x = np.array([px_new, py_new, vx_new, vy_new, theta_new])
-    
+  
         # 야코비안 행렬 계산 (선형화)
         F = self._compute_jacobian(ax, ay, theta)
-    
+  
         # 오차 공분산 예측
         self.P = F @ self.P @ F.T + self.Q
-    
+  
         return self.x.copy()
   
     def update(self, gps_x, gps_y):
         """
         보정 단계 (Update Step)
-    
+  
         GPS 측정값으로 예측값 보정
         """
         # 측정 행렬 (위치만 측정 가능)
@@ -1183,27 +1170,27 @@ class ExtendedKalmanFilter:
             [1, 0, 0, 0, 0],
             [0, 1, 0, 0, 0]
         ])
-    
+  
         # 측정값
         z = np.array([gps_x, gps_y])
-    
+  
         # 예측된 측정값
         z_pred = H @ self.x
-    
+  
         # 잔차 (측정값 - 예측값)
         y = z - z_pred
-    
+  
         # 칼만 이득 계산
         S = H @ self.P @ H.T + self.R
         K = self.P @ H.T @ np.linalg.inv(S)
-    
+  
         # 상태 보정
         self.x = self.x + K @ y
-    
+  
         # 오차 공분산 보정
         I = np.eye(5)
         self.P = (I - K @ H) @ self.P
-    
+  
         return self.x.copy()
   
     def _compute_jacobian(self, ax, ay, theta):
@@ -1211,15 +1198,15 @@ class ExtendedKalmanFilter:
         dt = self.dt
         cos_t = np.cos(theta)
         sin_t = np.sin(theta)
-    
+  
         F = np.eye(5)
         F[0, 2] = dt  # dpx/dvx
         F[1, 3] = dt  # dpy/dvy
-    
+  
         # dpx/dtheta, dpy/dtheta (비선형 항)
         F[0, 4] = (-ax * sin_t - ay * cos_t) * 0.5 * dt**2
         F[1, 4] = (ax * cos_t - ay * sin_t) * 0.5 * dt**2
-    
+  
         return F
 
 
@@ -1386,12 +1373,12 @@ void ekf_example() {
 typedef struct {
     uint32_t ir_buffer[BUFFER_SIZE];   // IR LED 값 버퍼
     int buffer_index;                   // 현재 인덱스
-    
+  
     // 피크 검출용
     uint32_t last_peak_value;
     int last_peak_index;
     int peak_count;
-    
+  
     // 결과
     int bpm;                           // 계산된 심박수
     float rr_interval;                  // RR 간격 (초)
@@ -1411,7 +1398,7 @@ void ppg_init(PPGProcessor* ppg) {
 uint32_t moving_average(uint32_t* buffer, int index, int window_size) {
     uint32_t sum = 0;
     int count = 0;
-    
+  
     for (int i = -window_size/2; i <= window_size/2; i++) {
         int idx = index + i;
         if (idx >= 0 && idx < BUFFER_SIZE) {
@@ -1419,7 +1406,7 @@ uint32_t moving_average(uint32_t* buffer, int index, int window_size) {
             count++;
         }
     }
-    
+  
     return sum / count;
 }
 
@@ -1427,23 +1414,23 @@ uint32_t moving_average(uint32_t* buffer, int index, int window_size) {
 bool detect_peak(PPGProcessor* ppg, uint32_t current_value, int current_index) {
     // 5샘플 이동 평균으로 스무딩
     uint32_t smoothed = moving_average(ppg->ir_buffer, current_index, 5);
-    
+  
     // 이전 값들과 비교 (로컬 최대값 찾기)
     if (current_index < 2) return false;
-    
+  
     uint32_t prev1 = ppg->ir_buffer[current_index - 1];
     uint32_t prev2 = ppg->ir_buffer[current_index - 2];
-    
+  
     // 현재가 이전보다 작아지기 시작하면 → 피크 직전!
     if (prev1 > prev2 && prev1 > current_value) {
         // 피크 간 최소 간격 체크 (40 BPM = 1.5초 = 150샘플)
         int min_interval = 60 * SAMPLE_RATE / MAX_BPM;  // 30샘플 (200 BPM)
-        
+      
         if (current_index - ppg->last_peak_index > min_interval) {
             return true;
         }
     }
-    
+  
     return false;
 }
 
@@ -1451,27 +1438,27 @@ bool detect_peak(PPGProcessor* ppg, uint32_t current_value, int current_index) {
 void ppg_process_sample(PPGProcessor* ppg, uint32_t ir_value) {
     // 버퍼에 저장
     ppg->ir_buffer[ppg->buffer_index] = ir_value;
-    
+  
     // 피크 검출
     if (detect_peak(ppg, ir_value, ppg->buffer_index)) {
         // RR 간격 계산
         int samples_since_last = ppg->buffer_index - ppg->last_peak_index;
         ppg->rr_interval = (float)samples_since_last / SAMPLE_RATE;
-        
+      
         // BPM 계산
         if (ppg->rr_interval > 0) {
             int calculated_bpm = (int)(60.0f / ppg->rr_interval);
-            
+          
             // 유효 범위 체크
             if (calculated_bpm >= MIN_BPM && calculated_bpm <= MAX_BPM) {
                 ppg->bpm = calculated_bpm;
             }
         }
-        
+      
         ppg->last_peak_index = ppg->buffer_index;
         ppg->peak_count++;
     }
-    
+  
     // 인덱스 순환
     ppg->buffer_index = (ppg->buffer_index + 1) % BUFFER_SIZE;
 }
@@ -1480,7 +1467,7 @@ void ppg_process_sample(PPGProcessor* ppg, uint32_t ir_value) {
 void ppg_example() {
     PPGProcessor ppg;
     ppg_init(&ppg);
-    
+  
     // 시뮬레이션: IR 센서 값 (실제로는 I2C로 읽음)
     uint32_t sample_data[] = {
         50213, 50198, 50245, 50312, 50456,  // 상승
@@ -1489,11 +1476,11 @@ void ppg_example() {
         50012, 50034, 50078, 50145, 50234   // 상승 시작
         // ... 계속
     };
-    
+  
     for (int i = 0; i < 200; i++) {  // 2초간의 데이터
         ppg_process_sample(&ppg, sample_data[i % 20]);
     }
-    
+  
     printf("현재 심박수: %d BPM\n", ppg.bpm);
     printf("RR 간격: %.3f 초\n", ppg.rr_interval);
 }
@@ -1622,11 +1609,11 @@ def point_in_polygon(point: Point, polygon: List[Point]) -> bool:
     for i in range(n):
         xi, yi = polygon[i]
         xj, yj = polygon[j]
-    
+  
         if ((yi > y) != (yj > y)) and \
            (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
             inside = not inside
-    
+  
         j = i
   
     return inside
@@ -1646,11 +1633,11 @@ if __name__ == "__main__":
     # 닫힌 다각형인지 확인
     if is_polygon_closed(running_path):
         print("✅ 영역 완성!")
-    
+  
         # 면적 계산
         area = calculate_polygon_area(running_path)
         print(f"📐 정복한 면적: {area:.1f} m² ({area/10000:.3f} 헥타르)")
-    
+  
         # 점수 계산 (1m² = 1점)
         score = int(area)
         print(f"🏆 획득 점수: {score} 점")
@@ -1780,13 +1767,13 @@ async def location_websocket(websocket: WebSocket, user_id: str):
     while True:
         # 클라이언트로부터 센서 데이터 수신
         data = await websocket.receive_json()
-    
+  
         # 칼만 필터 적용 (실제로는 EKF 클래스 사용)
         filtered_position = {
             "x": data["gps_x"] * 0.8 + data["imu_x"] * 0.2,
             "y": data["gps_y"] * 0.8 + data["imu_y"] * 0.2,
         }
-    
+  
         # 보정된 위치 전송
         await websocket.send_json(filtered_position)
 
@@ -1820,24 +1807,3 @@ if __name__ == "__main__":
 ```
 
 ---
-
-## 10. 프로젝트 로드맵
-
-### Phase 1: 하드웨어 ✅ (현재)
-
-- [X] ESP32-S3 + 센서들 납땜
-- [X] I2C/UART 통신 구현
-- [X] Raw Data SD카드 저장
-- [X] Python으로 칼만 필터 시뮬레이션
-
-### Phase 2: 연결성 🔄 (진행 중)
-
-- [ ] BLE 5.0으로 앱과 통신
-- [ ] iOS/Android 앱 지도 연동
-- [ ] 실시간 영역 정복 시각화
-
-### Phase 3: 백엔드 📋 (예정)
-
-- [ ] Kafka & 시계열 DB 구축
-- [ ] 심박변이도(HRV) 분석
-- [ ] 리더보드 시스템
